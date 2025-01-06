@@ -219,7 +219,7 @@ class MixLinear_GEMM(nn.Module):
 
             if self.cnt == 1 and input.shape[0] == 2:
                 # to do  写一个kernel 加速
-                
+
                 
                 if  (input[[0, 1],0:32,0:8] - self.last_input).sum() == 0:
                     self.reuse_output_because_of_zeros_input = True
