@@ -204,7 +204,7 @@ class MixLinear_GEMM(nn.Module):
             """
             if self.cnt >= 50:
                 self.cnt = 0
-                self.reuse_output_because_of_zeros_input = False
+                # self.reuse_output_because_of_zeros_input = False
                 # release cache
                 self.cache_computed = False
 
@@ -215,14 +215,16 @@ class MixLinear_GEMM(nn.Module):
             # if self.reuse_output_because_of_zeros_input and self.y1 is not None:
             #     return self.y1       
             if self.cnt == 0 and input.shape[0] == 2:
-                self.last_input = input[[0, 1],0:32,0:8]
+                if input[0,0,0] == 0:
+                    self.last_input = input[[1],0:32,0:8]
 
             if self.cnt == 1 and input.shape[0] == 2:
                 # to do  写一个kernel 加速
+                # no need!
 
-                
-                if  (input[[0, 1],0:32,0:8] - self.last_input).sum() == 0:
-                    self.reuse_output_because_of_zeros_input = True
+                if self.last_input is not None:
+                    if  (input[[1],0:32,0:8] - self.last_input).sum() == 0:
+                        self.reuse_output_because_of_zeros_input = True
                     
 
 

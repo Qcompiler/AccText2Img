@@ -46,13 +46,13 @@ images = pipe(prompt=prompt).images[0]
 images.save("inference_text3img.png")
 
 
-import time
-start = time.time()
-for i in range(5):
-    prompt = "A girl playing with a red dog"
-    images = pipe(prompt=prompt).images[0]
+# import time
+# start = time.time()
+# for i in range(5):
+#     prompt = "A girl playing with a red dog"
+#     images = pipe(prompt=prompt).images[0]
 
-end = time.time()
+# end = time.time()
 
-print(end - start)
+# print(end - start)
     
