@@ -3,10 +3,16 @@ import torch
 import math
 import torch.nn as nn
 import sys
+import gc
 from torch.nn.parameter import Parameter
 from torch.nn import init
 from torch.nn import functional as F
 import mixgemm
+try:
+    from EETQ import quant_weights, w8_a16_gemm
+    memory_bound_eetq_linear = True
+except:
+    memory_bound_eetq_linear = False
 
 
 
@@ -57,6 +63,16 @@ class MixLinear_GEMM(nn.Module):
         self.reuse_output_because_of_zeros_input = False
         self.last_input = None
         self.cache_computed = False
+
+        self.q_weight = None
+        self.q_scale_col = None
+        self.input_scales = None
+        self.reuse_scaling_factor = False
+
+        self.scale_max = None
+        self.scale_min = None
+        self.doing_estimation = True
+
     def reset_parameters(self) -> None:
         init.kaiming_uniform_(self.weight, a=math.sqrt(5))
         if self.bias is not None:
@@ -66,103 +82,116 @@ class MixLinear_GEMM(nn.Module):
 
 
     def forward(self, input):
+
         if  self.init is not True:
-            # print("I am init the wegith do not disturb me and count me during time estimation")
+            if self.layer_id == 1:
+                print("I am init the weight do not disturb me and count me during time estimation")
+
+            if len(input.shape) == 3:
+                M = input.shape[0] * input.shape[1]
+                self.input_scales = torch.zeros((M, 1), dtype = torch.float32, device = input.device)
             self.init = True
-            if len(input.shape) == 3 :
-                if input.shape[0] * input.shape[1] > 128:
-                    # print("I should quant this layer")
+            computed_bound = False
+            if len(input.shape) == 3 and input.shape[0] * input.shape[1] > 64:
+                 computed_bound = True
+            if len(input.shape) == 2  and  input.shape[0]  > 64:
+                computed_bound = True
+            if not computed_bound:
+                if memory_bound_eetq_linear:
+                    int8_weight_cpu = torch.t(self.weight.data).contiguous().cpu()
+                    int8_weight, scales = quant_weights(int8_weight_cpu, torch.int8, False)
+                    self.eetq_weight = (int8_weight).cuda()
+                    self.eetq_scale_col = (scales.half()).cuda()
+
+                    self.weight.data = self.weight.data.cpu()
+                    del self.weight
+            if computed_bound :
+                # print("I should quant this layer")
+                tmp = input.reshape(-1, input.shape[-1])
+                # print(tmp.shape)
+                # print("------------")
+                local_ind = FindOutliers(tmp)
+                # print(local_ind)
+        
+                self.n_outliers = len(local_ind)
+                
+                if self.n_outliers == 0: 
+                    #print("without outliers hhh !")
+                    self.weight.data = self.weight.data.cpu()
+                    tmp = self.weight.data
                     
-                    tmp = input.reshape(-1, input.shape[-1])
-                    # print(tmp.shape)
-                    # print("------------")
-                    local_ind = FindOutliers(tmp)
-                    # print(local_ind)
-            
-                    self.n_outliers = len(local_ind)
-                    # self.n_outliers = 0
-                    if self.n_outliers == 0: 
-                        #print("without outliers hhh !")
-                        self.weight.data = self.weight.data.cpu()
-                        tmp = self.weight.data
-                        
 
-                        # # 把 bias 打包到 scale 里面
-                        # if self.bias is not None:
-                        #     tmp = self.bias
-                        # else:
-                        #     tmp = torch.zeros((self.out_features), dtype= torch.float16, device= input.device)
-                        # # print(self.q_scale_col)
-                        # # print(self.bias)
-                        # tmp = torch.cat([self.q_scale_col, tmp]).reshape((2, self.out_features))
-                        # self.q_scale_col = tmp.t().contiguous().cuda()
-                        # # print(tmp)
-                        # # exit()
-                        # # self.q_weight = tmp.round().to(torch.int8).cuda().T
-                        # # self.q_scale_col = self.q_scale_col.cuda().to(torch.float32)
-                        # self.quanted = True
-                        
-                        # print(self.weight.shape)
-                        # print(input.shape)
-                        # print(input)
-                        # grand =  F.linear(input, self.weight, self.bias)
-                        # M = input.shape[0] * input.shape[1]
-                        # K = self.in_features
-                        # N = self.out_features
-                        
-                        
-                        # y1 = mixlib.mixgemmforward_direct(M,N,K,
-                        #             input,
-                        #             self.q_weight, 
-                        #             self.q_scale_col)
-                        # if self.bias is not None:
-                        #     y1 += self.bias
-                        # grand = grand.reshape(y1.shape)
+                    # # 把 bias 打包到 scale 里面
+                    # if self.bias is not None:
+                    #     tmp = self.bias
+                    # else:
+                    #     tmp = torch.zeros((self.out_features), dtype= torch.float16, device= input.device)
+                    # # print(self.q_scale_col)
+                    # # print(self.bias)
+                    # tmp = torch.cat([self.q_scale_col, tmp]).reshape((2, self.out_features))
+                    # self.q_scale_col = tmp.t().contiguous().cuda()
+                    # # print(tmp)
+                    # # exit()
+                    # # self.q_weight = tmp.round().to(torch.int8).cuda().T
+                    # # self.q_scale_col = self.q_scale_col.cuda().to(torch.float32)
+                    # self.quanted = True
+                    
+                    # print(self.weight.shape)
+                    # print(input.shape)
+                    # print(input)
+                    # grand =  F.linear(input, self.weight, self.bias)
+                    # M = input.shape[0] * input.shape[1]
+                    # K = self.in_features
+                    # N = self.out_features
+                    
+                    
+                    # y1 = mixlib.mixgemmforward_direct(M,N,K,
+                    #             input,
+                    #             self.q_weight, 
+                    #             self.q_scale_col)
+                    # if self.bias is not None:
+                    #     y1 += self.bias
+                    # grand = grand.reshape(y1.shape)
 
-                        
-                        # print(grand[0:3,0:3])
-                        # print(y1[0:3,0:3])
-                        # exit()
-                    else:
-                        # pass
+                    
+                    # print(grand[0:3,0:3])
+                    # print(y1[0:3,0:3])
+                    # exit()
+                else:
+                    # pass
 
-                        self.weight_cache = self.weight.data[:, local_ind]
-                        
-                        
-                        self.ind = local_ind
-                        tmp = self.weight.cpu()
-                        
-                        tmp[:,local_ind] = 0
+                    self.weight_cache = self.weight.data[:, local_ind]
+                    
+                    
+                    self.ind = local_ind
+                    tmp = self.weight.cpu()                   
+                    tmp[:,local_ind] = 0
 
-                    # self.weight.data = self.weight.data.cpu()
-                    # del self.weight
-                    self.q_scale_col =   (torch.max(torch.abs(tmp), dim=1)[0].unsqueeze(1) / (127)).to(torch.float16).reshape((1,self.out_features))
-                    tmp  /= self.q_scale_col.T
-                    tmp = torch.clamp(tmp, -128, 127)
+                # self.weight.data = self.weight.data.cpu()
+                # del self.weight
+                self.q_scale_col =   (torch.max(torch.abs(tmp), dim=1)[0].unsqueeze(1) / (127)).to(torch.float16).reshape((1,self.out_features))
+                tmp  /= self.q_scale_col.T
+                tmp = torch.clamp(tmp, -128, 127)
 
-                    self.q_weight = tmp.round().to(torch.int8).cuda()
-                    self.q_scale_col = self.q_scale_col.cuda().reshape((self.out_features))
+                self.q_weight = tmp.round().to(torch.int8).cuda()
+                self.q_scale_col = self.q_scale_col.cuda().reshape((self.out_features))
 
 
-
-                    tmp = torch.clamp(tmp, -128, 127)
-
-                    self.q_weight = tmp.round().to(torch.int8).cuda()
-                    self.q_scale_col = self.q_scale_col.cuda().reshape((self.out_features))
-
-
-                    # 把 bias 打包到 scale 里面
-                    if self.bias is not None:
-                        tmp = self.bias
-                    else:
-                        tmp = torch.zeros((self.out_features), dtype= torch.float16, device= input.device)
-                    # print(self.q_scale_col)
-                    # print(self.bias)
-                    tmp = torch.cat([self.q_scale_col, tmp]).reshape((2, self.out_features))
-                    self.q_scale_col = tmp.t().contiguous().cuda()
-                    self.quanted = True
-
-                        
+                # 把 bias 打包到 scale 里面
+                if self.bias is not None:
+                    tmp = self.bias
+                else:
+                    tmp = torch.zeros((self.out_features), dtype= torch.float16, device= input.device)
+                # print(self.q_scale_col)
+                # print(self.bias)
+                tmp = torch.cat([self.q_scale_col, tmp]).reshape((2, self.out_features))
+                self.q_scale_col = tmp.t().contiguous().cuda()
+                self.quanted = True
+                self.weight.data = self.weight.data.cpu()
+                del self.weight
+                del tmp
+                
+                                    
             
 
 
@@ -170,7 +199,24 @@ class MixLinear_GEMM(nn.Module):
         #   
         # if self.cnt > 4:
         #     exit()
+
         if   self.quanted is False :
+            self.cnt += 1
+            # if self.cnt == 0:
+            #     print(input.shape)
+            #     self.cnt += 1
+            # if not input.is_contiguous():
+            #     input = input.contiguous()
+
+            # return y
+            # inputs = input.reshape(-1, input.shape[-1])
+            # shape = input.shape[:-1] + (self.out_features, )
+            if memory_bound_eetq_linear:
+                y =  w8_a16_gemm(input, self.eetq_weight, self.eetq_scale_col)
+
+                if self.bias is not None:
+                    y += self.bias
+                return y
             return F.linear(input, self.weight, self.bias)
         else:
             assert ( len(input.shape) == 3) 
@@ -182,6 +228,7 @@ class MixLinear_GEMM(nn.Module):
             # to optimize the in continues memory!
             # tmp = torch.zeros(input.shape)
             if not input.is_contiguous():
+
                 input = input.contiguous()
             # if not input.is_contiguous():
             #     print(input.stride(0))
@@ -266,14 +313,50 @@ class MixLinear_GEMM(nn.Module):
                 return self.y1  
             if self.n_outliers == 0:
 
-                
+                if self.reuse_scaling_factor:
+
+                    if self.cnt == 0:
+                        y1 = mixgemm.mixgemmforward_direct(M, N, K,
+                                        input,
+                                        self.input_scales,
+                                        self.q_weight, 
+                                        self.q_scale_col, 
+                                        input_shape0, input_shape1)
+                    else:
+                        y1 = mixgemm.mixgemmforward_direct_with_scaling(M, N, K,
+                                            input,
+                                            self.input_scales,
+                                            self.q_weight, 
+                                            self.q_scale_col, 
+                                            input_shape0, 
+                                            input_shape1 )
                  
+                else:
+                    # 记录最大和最小scale
+                    # if self.doing_estimation:
+                    #     current_scale = torch.amax(input)
+
+                    #     if self.scale_max is None:
+                    #         self.scale_max = current_scale
+                    #         self.scale_min = current_scale
+                    #     self.scale_max =  max (self.scale_max, current_scale)
+                    #     self.scale_min =  min (self.scale_min, current_scale)
+                    #     if self.cnt == 49:
+                    #         self.doing_estimation = False
+                    #         if self.scale_max / self.scale_min < 1.5:
+                    #             self.reuse_scaling_factor = True
+                                
+
+
+
+
+                    y1 = mixgemm.mixgemmforward_direct(M, N, K,
+                                        input,
+                                        self.input_scales,
+                                        self.q_weight, 
+                                        self.q_scale_col, 
+                                        input_shape0, input_shape1)
                 
-                y1 = mixgemm.mixgemmforward_direct(M, N, K,
-                                    input,
-                                    self.q_weight, 
-                                    self.q_scale_col, 
-                                    input_shape0, input_shape1)
                 
                 debug = 0
                 use_ops = 0
