@@ -92,15 +92,18 @@ class MixLinear_GEMM(nn.Module):
             2025.1.8 : DONE
             no need ! failed! No locality.....
         (3) INT8 GEMM kernel:
-            todo 1: autotune by triton
-            todo 2: tune by cutlass param
+            todo 1: autotune by triton :   github.com/AlibabaPAI/FLASHNN/blob/main/flashnn/triton_kernels/gemm_a8w8.py
+            todo 2: tune by cutlass param : add gemm shape in param see in git log
         (4) FP8 GEMM kernel:
-            todo 1: 
-            test in H100
+            todo :  test in H100
             2025.1.8 : DONE
             I implemented in mylinearfp8.py
             and change debug = True in the file to get the profile result
-        (5) 
+        (5) optimize:   
+            input = input.contiguous()
+            this only affect the computing scaling factor and quantization steps
+            so we shoud add support for these two kernels with in_contiguous input
+
         """
         if  self.init is not True:
             if self.layer_id == 1:
@@ -207,6 +210,8 @@ class MixLinear_GEMM(nn.Module):
                 self.q_scale_col = tmp.t().contiguous().cuda()
                 self.quanted = True
                 self.weight.data = self.weight.data.cpu()
+
+                # 删除原来的权重
                 del self.weight
                 del tmp
                 
@@ -320,7 +325,6 @@ class MixLinear_GEMM(nn.Module):
             # if self.cnt == 50:
             #     print(self.scale_history[0:self.cnt])
             """"
-            #     #exit()
             during this analysis we found that the location of the max index keeps vary stable
             so we should not compute the scaling factors at each steps?
             maybe we could try it
