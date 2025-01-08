@@ -8,6 +8,7 @@ torch.manual_seed(0)
 import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument("--mix_linear", action = 'store_true' )
+parser.add_argument("--fp8_linear", action = 'store_true' )
 parser.add_argument("--q_attn", action = 'store_true')
 
 parser.add_argument("--model", type=str, default="Llama-2-7b")
@@ -17,6 +18,9 @@ if args.mix_linear:
     from mylinear import MixLinear_GEMM
     torch.nn.Linear = MixLinear_GEMM
 
+if args.fp8_linear:
+    from mylinearfp8 import MixLinear_FP8GEMM
+    torch.nn.Linear = MixLinear_FP8GEMM
 if args.q_attn:
 
     from sageattention import sageattn

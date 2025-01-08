@@ -2,3 +2,7 @@ inference_*
 __pycache__/
 SageAttention-main/
 *.zip
+report*
+*.png
+demo/
+*.txt

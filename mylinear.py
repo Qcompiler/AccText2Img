@@ -83,6 +83,25 @@ class MixLinear_GEMM(nn.Module):
 
     def forward(self, input):
 
+        """
+        To do
+        (1) I should write a kernel to accelerated the code : if  (input[[1],0:32,0:8] - self.last_input).sum() == 0:
+            2025.1.7: DONE
+            not required now ---------- I use my locality algorithm
+        (2) I should do some further analyse of max value pattern 
+            2025.1.8 : DONE
+            no need ! failed! No locality.....
+        (3) INT8 GEMM kernel:
+            todo 1: autotune by triton
+            todo 2: tune by cutlass param
+        (4) FP8 GEMM kernel:
+            todo 1: 
+            test in H100
+            2025.1.8 : DONE
+            I implemented in mylinearfp8.py
+            and change debug = True in the file to get the profile result
+        (5) 
+        """
         if  self.init is not True:
             if self.layer_id == 1:
                 print("I am init the weight do not disturb me and count me during time estimation")
@@ -246,9 +265,7 @@ class MixLinear_GEMM(nn.Module):
             # input = input.reshape(M, K)
             # self.scale_history = self.scale_history.to(input.device)
             # # print(input.shape)
-            """
-            further analysis of max value
-            """
+            
             if self.cnt >= 50:
                 self.cnt = 0
                 # self.reuse_output_because_of_zeros_input = False
@@ -266,8 +283,7 @@ class MixLinear_GEMM(nn.Module):
                     self.last_input = input[[1],0:32,0:8]
 
             if self.cnt == 1 and input.shape[0] == 2:
-                # to do  写一个kernel 加速
-                # no need!
+                
 
                 if self.last_input is not None:
                     if  (input[[1],0:32,0:8] - self.last_input).sum() == 0:
@@ -308,6 +324,9 @@ class MixLinear_GEMM(nn.Module):
             during this analysis we found that the location of the max index keeps vary stable
             so we should not compute the scaling factors at each steps?
             maybe we could try it
+            2025.1.7
+            sorry
+            not work
             """
             if  self.reuse_output_because_of_zeros_input is True and self.cache_computed:
                 return self.y1  
