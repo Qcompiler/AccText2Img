@@ -103,7 +103,12 @@ class MixLinear_GEMM(nn.Module):
             input = input.contiguous()
             this only affect the computing scaling factor and quantization steps
             so we shoud add support for these two kernels with in_contiguous input
-
+        (6) fuse bias and scaling kernel together:
+            2025.1.4 done!
+            see in file /home/chenyidong/seperated_kernel/kernel/symmetric/epilogue/thread/linear_combination_dequant.h
+        (7) load sparse outliers from global to RF instread of global to shared 
+            developing 
+            in file /home/chenyidong/seperated_kernel/kernel/mixgemm.cu __global___ void mma_sparse_A_dense_B_kernel
         """
         if  self.init is not True:
             if self.layer_id == 1:
