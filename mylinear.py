@@ -101,8 +101,8 @@ class MixLinear_GEMM(nn.Module):
             and change debug = True in the file to get the profile result
         (5) optimize:   
             input = input.contiguous()
-            this only affect the computing scaling factor and quantization steps
-            so we shoud add support for these two kernels with in_contiguous input
+            this only affects the computing scaling factor and quantization steps
+            so we should add support for these two kernels with in_contiguous input
         (6) fuse bias and scaling kernel together:
             2025.1.4 done!
             see in file /home/chenyidong/seperated_kernel/kernel/symmetric/epilogue/thread/linear_combination_dequant.h
@@ -119,6 +119,11 @@ class MixLinear_GEMM(nn.Module):
                 self.input_scales = torch.zeros((M, 1), dtype = torch.float32, device = input.device)
             self.init = True
             computed_bound = False
+
+            self.find_zeros = torch.zeros((1,), dtype = torch.int32, pin_memory = True)
+            self.reuse_output = torch.zeros((1,), dtype = torch.int32, pin_memory = True)
+            self.last_input = torch.zeros((1, 32, 8 ), dtype = torch.float16, device = input.device)
+
             if len(input.shape) == 3 and input.shape[0] * input.shape[1] > 64:
                  computed_bound = True
             if len(input.shape) == 2  and  input.shape[0]  > 64:
@@ -135,8 +140,6 @@ class MixLinear_GEMM(nn.Module):
             if computed_bound :
                 # print("I should quant this layer")
                 tmp = input.reshape(-1, input.shape[-1])
-                # print(tmp.shape)
-                # print("------------")
                 local_ind = FindOutliers(tmp)
                 # print(local_ind)
         
@@ -147,43 +150,6 @@ class MixLinear_GEMM(nn.Module):
                     self.weight.data = self.weight.data.cpu()
                     tmp = self.weight.data
                     
-
-                    # # 把 bias 打包到 scale 里面
-                    # if self.bias is not None:
-                    #     tmp = self.bias
-                    # else:
-                    #     tmp = torch.zeros((self.out_features), dtype= torch.float16, device= input.device)
-                    # # print(self.q_scale_col)
-                    # # print(self.bias)
-                    # tmp = torch.cat([self.q_scale_col, tmp]).reshape((2, self.out_features))
-                    # self.q_scale_col = tmp.t().contiguous().cuda()
-                    # # print(tmp)
-                    # # exit()
-                    # # self.q_weight = tmp.round().to(torch.int8).cuda().T
-                    # # self.q_scale_col = self.q_scale_col.cuda().to(torch.float32)
-                    # self.quanted = True
-                    
-                    # print(self.weight.shape)
-                    # print(input.shape)
-                    # print(input)
-                    # grand =  F.linear(input, self.weight, self.bias)
-                    # M = input.shape[0] * input.shape[1]
-                    # K = self.in_features
-                    # N = self.out_features
-                    
-                    
-                    # y1 = mixlib.mixgemmforward_direct(M,N,K,
-                    #             input,
-                    #             self.q_weight, 
-                    #             self.q_scale_col)
-                    # if self.bias is not None:
-                    #     y1 += self.bias
-                    # grand = grand.reshape(y1.shape)
-
-                    
-                    # print(grand[0:3,0:3])
-                    # print(y1[0:3,0:3])
-                    # exit()
                 else:
                     # pass
 
@@ -231,15 +197,7 @@ class MixLinear_GEMM(nn.Module):
 
         if   self.quanted is False :
             self.cnt += 1
-            # if self.cnt == 0:
-            #     print(input.shape)
-            #     self.cnt += 1
-            # if not input.is_contiguous():
-            #     input = input.contiguous()
 
-            # return y
-            # inputs = input.reshape(-1, input.shape[-1])
-            # shape = input.shape[:-1] + (self.out_features, )
             if memory_bound_eetq_linear:
                 y =  w8_a16_gemm(input, self.eetq_weight, self.eetq_scale_col)
 
@@ -259,25 +217,13 @@ class MixLinear_GEMM(nn.Module):
             if not input.is_contiguous():
 
                 input = input.contiguous()
-            # if not input.is_contiguous():
-            #     print(input.stride(0))
-            #     print(input.stride(1))
-            #     print(input.stride(2))
-            #     print(tmp.stride(0))
-            #     print(tmp.stride(1))
-            #     print(tmp.stride(2))
-            #     print("input shape is ")
-            #     print(input.shape)
-                
-            #     exit()
-            #     input = input.reshape(M, K)
-             
-            # input = input.reshape(M, K)
-            # self.scale_history = self.scale_history.to(input.device)
-            # # print(input.shape)
+
             
             if self.cnt >= 50:
+                
                 self.cnt = 0
+                self.find_zeros[0] = 0
+
                 # self.reuse_output_because_of_zeros_input = False
                 # release cache
                 self.cache_computed = False
@@ -289,43 +235,23 @@ class MixLinear_GEMM(nn.Module):
             # if self.reuse_output_because_of_zeros_input and self.y1 is not None:
             #     return self.y1       
             if self.cnt == 0 and input.shape[0] == 2:
-                if input[0,0,0] == 0:
-                    self.last_input = input[[1],0:32,0:8]
+                #     self.last_input = input[[1],0:32,0:8] is input[0,0,0] is 0
+                mixgemm.find_zeros(self.find_zeros, input, input.shape[0], input.shape[1], K, self.last_input)
+                
+                # if input[0,0,0] == 0:
+                #     self.last_input = input[[1],0:32,0:8]
 
             if self.cnt == 1 and input.shape[0] == 2:
                 
+                if self.find_zeros[0] == 1:
+                    # if  (input[[1],0:32,0:8] - self.last_input).sum() == 0:
+                    #     self.reuse_output_because_of_zeros_input = True
+                    mixgemm.reuse_output(self.reuse_output, input, input.shape[0], input.shape[1], K, self.last_input)
 
-                if self.last_input is not None:
-                    if  (input[[1],0:32,0:8] - self.last_input).sum() == 0:
+                    if self.reuse_output[0] == 1:
                         self.reuse_output_because_of_zeros_input = True
                     
 
-
-                                                  
-                    
-
-                # if input.shape[0] == 1:
-                #     if self.last_input is not None:
-                #         if  (input[[0],0:32,0:8] - self.last_input).sum() == 0:
-                #             self.reuse_output_because_of_zeros_input = True
-                #             print("!!locallity!!!!!")
-
-                #     else:
-                #         self.last_input = input[[0],0:32,0:8]
-                # if input[0:20].sum() == 0:
-                #     if self.last_input is not None:
-                #         if  (input - self.last_input).abs().sum() == 0:
-                #             self.reuse_output_because_of_zeros_input = True
-                #     else:
-                #         self.last_input = input
-                #print("layer id is %d"%(self.layer_id))
-                #print(input)
-                #exit()
-            # if self.layer_id == 30 or self.layer_id == 300:
-            #     print(self.cnt)
-
-            # if self.cnt == 1:
-            #     exit()
             self.cnt += 1
             # if self.cnt == 50:
             #     print(self.scale_history[0:self.cnt])
