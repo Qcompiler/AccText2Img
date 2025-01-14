@@ -11,6 +11,7 @@ import mixgemm
 import mixlib
 from vllm import _custom_ops as ops
 import vllm._C
+import mixgemm_v2
 layer_id = 0
 class MixLinear_FP8GEMM(nn.Module):
     def __init__(self, in_features, out_features, bias = True,  
@@ -33,7 +34,7 @@ class MixLinear_FP8GEMM(nn.Module):
             self.register_parameter('bias', None)
         self.reset_parameters()
 
-        
+        self.q_weight = torch.empty((1, 1), dtype = torch.float8_e4m3fn)
 
         self.init = False
 
@@ -43,7 +44,7 @@ class MixLinear_FP8GEMM(nn.Module):
 
 
         self.q_scale_col = None
-        self.q_weight = None
+ 
         self.scale_input = None
         
 
@@ -62,6 +63,7 @@ class MixLinear_FP8GEMM(nn.Module):
 
     def forward(self, input):
          
+
         weight_dtype = torch.float8_e4m3fn
         if not input.is_contiguous():
             return F.linear(input, self.weight, self.bias)
@@ -70,6 +72,7 @@ class MixLinear_FP8GEMM(nn.Module):
 
         if   self.init is False:
             x = input.reshape(-1, input.shape[-1]) 
+
             self.scale_weight = torch.ones((1), device=input.device, dtype=torch.float32)
             self.scale_input = torch.ones((1), device=input.device, dtype=torch.float32)
             
@@ -79,8 +82,8 @@ class MixLinear_FP8GEMM(nn.Module):
             self.output = torch.empty_like(x, dtype=torch.float8_e4m3fn)
             torch.ops._C.dynamic_scaled_fp8_quant(self.output, x, self.scale_input)
 
-            self.w = torch.empty_like(self.weight, dtype=torch.float8_e4m3fn)
-            torch.ops._C.static_scaled_fp8_quant(self.w, self.weight, self.scale_weight)
+            self.q_weight = torch.empty_like(self.weight, dtype=torch.float8_e4m3fn)
+            torch.ops._C.static_scaled_fp8_quant(self.q_weight, self.weight, self.scale_weight)
 
             self.weight.data = self.weight.cpu()
             del self.weight
@@ -121,11 +124,22 @@ class MixLinear_FP8GEMM(nn.Module):
             if  self.reuse_output_because_of_zeros_input is True and self.cache_computed:
                 return self.y1  
         
-        torch.ops._C.static_scaled_fp8_quant(self.output, input, self.scale_input)
-        y1 = ops.cutlass_scaled_mm(self.output, self.w.T,
-                                                out_dtype=torch.float16,
-                                                scale_a=self.scale_input,
-                                                scale_b=self.scale_weight, bias = self.bias).reshape(out_shape)
+        # if self.cnt >  1:
+        #     assert  input.dtype == torch.float8_e4m3fn
+        if not  input.dtype == torch.float8_e4m3fn:
+            torch.ops._C.static_scaled_fp8_quant(self.output, input, self.scale_input)
+            input_tensor = self.output
+        else:
+            input_tensor = input
+        bs = 1 if len(input.shape) == 2 else input.shape[0]
+        seq = input.shape[0] if len(input.shape) == 2 else input.shape[1]
+        y1 =   mixgemm_v2.cutlass_scaled_mm_fp8(bs, seq, 
+                                            self.out_features, self.in_features,
+                                            input_tensor,
+                                            self.q_weight.T,
+                                            self.scale_input,
+                                            self.scale_weight,
+                                            self.bias, len(input.shape))
         if len(input.shape) == 3:
             if self.reuse_output_because_of_zeros_input:
                 self.cache_computed = True

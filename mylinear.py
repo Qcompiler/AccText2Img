@@ -42,7 +42,7 @@ class MixLinear_GEMM(nn.Module):
         self.weight = Parameter(torch.empty((out_features, in_features), **factory_kwargs), requires_grad = False)
         self.q_scale_col = torch.empty((1, out_features), **factory_kwargs)
 
-        self.q_weight = torch.empty((out_features, in_features), dtype = torch.int8)
+        self.q_weight = torch.empty((1, 1), dtype = torch.int8)
         if bias:
             self.bias = Parameter(torch.empty(out_features, **factory_kwargs))
         else:
@@ -56,15 +56,15 @@ class MixLinear_GEMM(nn.Module):
         self.n_outliers = 0
         
         self.cnt = 0
-        self.scale_history = torch.zeros((200) , dtype = torch.float16)
-        self.scale_ind_history = torch.zeros((200) , dtype = torch.int32)
+        self.output = torch.zeros((1) , dtype = torch.float16)
+
         
         self.y1 = None
         self.reuse_output_because_of_zeros_input = False
         self.last_input = None
         self.cache_computed = False
 
-        self.q_weight = None
+
         self.q_scale_col = None
         self.input_scales = None
         self.reuse_scaling_factor = False
