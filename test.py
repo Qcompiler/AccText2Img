@@ -12,11 +12,16 @@ parser.add_argument("--fp8_linear", action = 'store_true' )
 parser.add_argument("--q_attn", action = 'store_true')
 parser.add_argument("--reproduce", action = 'store_true')
 parser.add_argument("--fp16_algo", action = 'store_true')
+parser.add_argument("--sm90", action = 'store_true')
 parser.add_argument("--model", type=str, default="Llama-2-7b")
 args = parser.parse_args()
 
 if args.mix_linear:
     from mylinear import MixLinear_GEMM
+    torch.nn.Linear = MixLinear_GEMM
+
+if args.sm90:
+    from mylinearsm90 import MixLinear_GEMM
     torch.nn.Linear = MixLinear_GEMM
 
 if args.fp8_linear:

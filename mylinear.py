@@ -300,10 +300,6 @@ class MixLinear_GEMM(nn.Module):
                     #         if self.scale_max / self.scale_min < 1.5:
                     #             self.reuse_scaling_factor = True
                                 
-
-
-
-
                     y1 = mixgemm.mixgemmforward_direct(M, N, K,
                                         input,
                                         self.input_scales,
