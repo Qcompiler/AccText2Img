@@ -38,6 +38,7 @@ class MixLinear_FP8GEMM(nn.Module):
         self.init = False
 
         self.cnt = 0
+        
         self.scale_weight  = None
 
 
@@ -45,6 +46,11 @@ class MixLinear_FP8GEMM(nn.Module):
         self.q_weight = None
         self.scale_input = None
         
+
+        self.y1 = None
+        self.reuse_output_because_of_zeros_input = False
+        self.last_input = None
+        self.cache_computed = False
 
     def reset_parameters(self) -> None:
         init.kaiming_uniform_(self.weight, a=math.sqrt(5))
@@ -59,48 +65,73 @@ class MixLinear_FP8GEMM(nn.Module):
         weight_dtype = torch.float8_e4m3fn
         if not input.is_contiguous():
             return F.linear(input, self.weight, self.bias)
-            input = input.contiguous()
-        x = input.reshape(-1, input.shape[-1]) 
+            
+        
 
         if   self.init is False:
+            x = input.reshape(-1, input.shape[-1]) 
             self.scale_weight = torch.ones((1), device=input.device, dtype=torch.float32)
             self.scale_input = torch.ones((1), device=input.device, dtype=torch.float32)
             
             # self.w = self.weight.t().to(weight_dtype)
             self.init = True
 
-
-            # tmp = self.weight.cpu()
-            # self.q_scale_col =   (torch.max(torch.abs(tmp), dim=1)[0].unsqueeze(1) / (127)).to(torch.float16).reshape((1,self.out_features))
-            # tmp  /= self.q_scale_col.T
-            # tmp = torch.clamp(tmp, -128, 127)
-
-            # self.q_weight = tmp.round().to(torch.int8).cuda()
-            # self.q_scale_col = self.q_scale_col.cuda().to(torch.float32).reshape((self.out_features))
-
-            # start_event = torch.cuda.Event(enable_timing=True)
-            # end_event = torch.cuda.Event(enable_timing=True)
-            # torch.cuda.synchronize()
-            # start_event.record()
-            # for i in range(10):
-            #     o  = F.linear(input, self.weight, self.bias)
-            # end_event.record()
-            # torch.cuda.synchronize()
-            # self.ms_fp = start_event.elapsed_time(end_event)
-            # self.weight.data = self.weight.cpu()
-            # del self.weight
-
             self.output = torch.empty_like(x, dtype=torch.float8_e4m3fn)
             torch.ops._C.dynamic_scaled_fp8_quant(self.output, x, self.scale_input)
 
             self.w = torch.empty_like(self.weight, dtype=torch.float8_e4m3fn)
             torch.ops._C.static_scaled_fp8_quant(self.w, self.weight, self.scale_weight)
+
+            self.weight.data = self.weight.cpu()
+            del self.weight
+
+
+            self.find_zeros = torch.zeros((1,), dtype = torch.int32, pin_memory = True)
+            self.reuse_output = torch.zeros((1,), dtype = torch.int32, pin_memory = True)
+            self.last_input = torch.zeros((1, 32, 8 ), dtype = torch.float16, device = input.device)
+
             
         out_shape =  input.shape[:-1] + (self.out_features, )
         
-        # grand =  F.linear(input, self.weight, self.bias)
+        if len(input.shape) == 3:
 
-        torch.ops._C.static_scaled_fp8_quant(self.output, x, self.scale_input)
+            if self.cnt >= 50:
+                
+                self.cnt = 0
+                self.find_zeros[0] = 0
+
+                # self.reuse_output_because_of_zeros_input = False
+                # release cache
+                self.cache_computed = False
+
+        
+            if self.cnt == 0 and input.shape[0] == 2:
+                mixgemm.find_zeros(self.find_zeros, input, input.shape[0], input.shape[1], input.shape[2], self.last_input)
+                
+
+            if self.cnt == 1 and input.shape[0] == 2:
+                
+                if self.find_zeros[0] == 1:
+                    mixgemm.reuse_output(self.reuse_output, input, input.shape[0], input.shape[1],  input.shape[2], self.last_input)
+
+                    if self.reuse_output[0] == 1:
+                        self.reuse_output_because_of_zeros_input = True
+                    
+            self.cnt += 1
+            if  self.reuse_output_because_of_zeros_input is True and self.cache_computed:
+                return self.y1  
+        
+        torch.ops._C.static_scaled_fp8_quant(self.output, input, self.scale_input)
+        y1 = ops.cutlass_scaled_mm(self.output, self.w.T,
+                                                out_dtype=torch.float16,
+                                                scale_a=self.scale_input,
+                                                scale_b=self.scale_weight, bias = self.bias).reshape(out_shape)
+        if len(input.shape) == 3:
+            if self.reuse_output_because_of_zeros_input:
+                self.cache_computed = True
+                self.y1 = y1
+        return y1
+    
         return ops.cutlass_scaled_mm(self.output, self.w.T,
                                                 out_dtype=torch.float16,
                                                 scale_a=self.scale_input,

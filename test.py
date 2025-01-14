@@ -13,7 +13,9 @@ parser.add_argument("--q_attn", action = 'store_true')
 parser.add_argument("--reproduce", action = 'store_true')
 parser.add_argument("--fp16_algo", action = 'store_true')
 parser.add_argument("--sm90", action = 'store_true')
+parser.add_argument("--bench", action = 'store_true')
 parser.add_argument("--model", type=str, default="Llama-2-7b")
+
 args = parser.parse_args()
 
 if args.mix_linear:
@@ -73,13 +75,11 @@ if args.reproduce:
         images = pipe(prompt=prompt, num_inference_steps = num_inference_steps).images[0]
         images.save(str(num_inference_steps) + "_inference_text2img.png")
  
-# import time
-# start = time.time()
-# for i in range(5):
-#     prompt = "A girl playing with a red dog"
-#     images = pipe(prompt=prompt).images[0]
 
-# end = time.time()
+if args.bench:
 
-# print(end - start)
-    
+    for i in range(5):
+        prompt = "A girl playing with a red dog"
+        images = pipe(prompt=prompt).images[0]
+ 
+        
