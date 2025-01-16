@@ -63,10 +63,12 @@ class MixLinear_FP8GEMM(nn.Module):
 
     def forward(self, input):
          
-
+        if input.dtype == torch.float32:
+            return F.linear(input, self.weight, self.bias)
         weight_dtype = torch.float8_e4m3fn
         if not input.is_contiguous():
-            return F.linear(input, self.weight, self.bias)
+            input = input.contiguous()
+            # return F.linear(input, self.weight, self.bias)
             
         
 
@@ -86,7 +88,7 @@ class MixLinear_FP8GEMM(nn.Module):
             torch.ops._C.static_scaled_fp8_quant(self.q_weight, self.weight, self.scale_weight)
 
             self.weight.data = self.weight.cpu()
-            del self.weight
+            # del self.weight
 
 
             self.find_zeros = torch.zeros((1,), dtype = torch.int32, pin_memory = True)

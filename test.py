@@ -3,7 +3,9 @@
 import torch 
 import os
 from diffusers import DiffusionPipeline
-torch.manual_seed(0)
+from diffusers import StableDiffusion3Pipeline
+from diffusers import StableDiffusionPipeline,DPMSolverMultistepScheduler
+
 
 import argparse
 parser = argparse.ArgumentParser()
@@ -14,7 +16,8 @@ parser.add_argument("--reproduce", action = 'store_true')
 parser.add_argument("--fp16_algo", action = 'store_true')
 parser.add_argument("--sm90", action = 'store_true')
 parser.add_argument("--bench", action = 'store_true')
-parser.add_argument("--model", type=str, default="Llama-2-7b")
+parser.add_argument("--bnb", action = 'store_true')
+parser.add_argument("--model", type=str, default="sdxl")
 
 args = parser.parse_args()
 
@@ -23,8 +26,8 @@ if args.mix_linear:
     torch.nn.Linear = MixLinear_GEMM
 
 if args.sm90:
-    from mylinearsm90 import MixLinear_GEMM
-    torch.nn.Linear = MixLinear_GEMM
+    import transformer_engine.pytorch as te
+    torch.nn.Linear = te.Linear
 
 if args.fp8_linear:
     from mylinearfp8 import MixLinear_FP8GEMM
@@ -37,35 +40,94 @@ if args.q_attn:
     F.scaled_dot_product_attention = sageattn
 
 
+
 if args.fp16_algo:
     from mylinearfp16alg import MixLinear_GEMM
     torch.nn.Linear = MixLinear_GEMM
 
 
+from diffusers  import BitsAndBytesConfig  
 
-os.system("rm -r ./inference_text*")
-pipe = DiffusionPipeline.from_pretrained("/home/dataset/stabilityai/stable-diffusion-xl-base-1.0/stable-diffusion-xl-base-1.0", 
-                                         torch_dtype=torch.float16, use_safetensors=True, variant="fp16")
-pipe.to("cuda")
+from diffusers import Transformer2DModel, SD3Transformer2DModel
+
+# os.system("rm -r ./inference_text*")
+
+if args.model == "sdxl":
+    model = "/home/dataset/stabilityai/stable-diffusion-xl-base-1.0/stable-diffusion-xl-base-1.0"
+
+    pipe = DiffusionPipeline.from_pretrained(model, 
+                                            torch_dtype=torch.float16, 
+                                            use_safetensors=True, 
+                                            variant="fp16")
+    
+if args.model == "sd3.5":
+    model = "/home/dataset/stable-diffusion-3.5-medium"
+    if args.bnb:
+        quant_config = BitsAndBytesConfig(load_in_8bit=True)
+        transformer_8bit = SD3Transformer2DModel.from_pretrained(
+            model,
+            subfolder="transformer",
+            quantization_config=quant_config,
+            torch_dtype=torch.float16,
+        )
+
+        pipe = StableDiffusion3Pipeline.from_pretrained(model, 
+                                                torch_dtype=torch.float16,
+                                                transformer = transformer_8bit, 
+                                                use_safetensors=True, variant="fp16")
+    else:
+        pipe = StableDiffusion3Pipeline.from_pretrained(model, 
+                                                torch_dtype=torch.float16, 
+                                                use_safetensors=True, variant="fp16")
+
+if args.model == "sd3":
+    model = "/home/dataset/stable-diffusion-3-medium-diffusers"
+    if args.bnb:
+        quant_config = BitsAndBytesConfig(load_in_8bit=True)
+        transformer_8bit = SD3Transformer2DModel.from_pretrained(
+            model,
+            subfolder="transformer",
+            quantization_config=quant_config,
+            torch_dtype=torch.float16,
+        )
+
+        pipe = StableDiffusion3Pipeline.from_pretrained(model,transformer = transformer_8bit,  
+                                             torch_dtype=torch.float16, use_safetensors=True, variant="fp16")
+    else:
+        pipe = StableDiffusion3Pipeline.from_pretrained(model, 
+                                             torch_dtype=torch.float16, use_safetensors=True, variant="fp16")
+    
+
+
+pip = pipe.to("cuda")
+
+pip = pipe.to(torch.float16)
 
 
 
+
+# with torch.autocast("cuda", torch.float16):
 prompt = "An astronaut riding a green horse"
+num_inference_steps = 50
+# guidance_scale = 7.0
 
-images = pipe(prompt=prompt).images[0]
+
+torch.manual_seed(0)
+
+images = pipe(prompt=prompt, num_inference_steps = num_inference_steps).images[0]
 images.save("inference_text2img.png")
 print("start estimating!!")
 
 
 prompt = "An astronaut riding a red dog"
-images = pipe(prompt=prompt).images[0]
+images = pipe(prompt=prompt, num_inference_steps =  num_inference_steps).images[0]
 images.save("inference_text3img.png")
 
 
 if args.reproduce:
     
     
-   
+
     for num_inference_steps in [5, 8 , 10, 50]:
         torch.manual_seed(0)
         prompt = "An astronaut riding a green horse"
@@ -74,12 +136,19 @@ if args.reproduce:
         prompt = "An astronaut riding a red dog"
         images = pipe(prompt=prompt, num_inference_steps = num_inference_steps).images[0]
         images.save(str(num_inference_steps) + "_inference_text2img.png")
- 
+
 
 if args.bench:
 
-    for i in range(5):
-        prompt = "A girl playing with a red dog"
-        images = pipe(prompt=prompt).images[0]
- 
+    for i in range(4):
+        torch.manual_seed(0)
+        prompts = ["girl,blue|red dress,grass,playing", 
+                   "lake,many aquatic_plants and stones , fish", 
+                   "A girl,in the square,playing drums,smiling",
+                   "a girl,wear Hanfu" ]
+        images = pipe(prompt=prompts[i], num_inference_steps = num_inference_steps).images[0]
+        out = str(i) + ".png"
+        if args.mix_linear:
+            out = "q" + out
+        images.save(out)
         

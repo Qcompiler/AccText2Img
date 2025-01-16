@@ -14,7 +14,7 @@ try:
 except:
     memory_bound_eetq_linear = False
 
-
+memory_bound_eetq_linear = False
 
 def FindOutliers(Activation, sigma = None):
 
@@ -110,6 +110,9 @@ class MixLinear_GEMM(nn.Module):
             developing 
             in file /home/chenyidong/seperated_kernel/kernel/mixgemm.cu __global___ void mma_sparse_A_dense_B_kernel
         """
+
+        assert input.dtype == torch.float16
+
         if  self.init is not True:
             if self.layer_id == 1:
                 print("I am init the weight do not disturb me and count me during time estimation")
@@ -124,10 +127,12 @@ class MixLinear_GEMM(nn.Module):
             self.reuse_output = torch.zeros((1,), dtype = torch.int32, pin_memory = True)
             self.last_input = torch.zeros((1, 32, 8 ), dtype = torch.float16, device = input.device)
 
-            if len(input.shape) == 3 and input.shape[0] * input.shape[1] > 64:
+            if len(input.shape) == 3 and input.shape[0] * input.shape[1] > 32:
                  computed_bound = True
-            if len(input.shape) == 2  and  input.shape[0]  > 64:
+            if len(input.shape) == 2  and  input.shape[0]  > 32:
                 computed_bound = True
+
+            
             if not computed_bound:
                 if memory_bound_eetq_linear:
                     int8_weight_cpu = torch.t(self.weight.data).contiguous().cpu()
@@ -183,7 +188,8 @@ class MixLinear_GEMM(nn.Module):
                 self.weight.data = self.weight.data.cpu()
 
                 # 删除原来的权重
-                del self.weight
+                # del self.weight
+                # self.weight = torch.zeros(1,   dtype = torch.float16)
                 del tmp
                 
                                     
