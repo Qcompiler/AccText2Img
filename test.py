@@ -6,6 +6,7 @@ from diffusers import DiffusionPipeline
 from diffusers import StableDiffusion3Pipeline
 from diffusers import StableDiffusionPipeline,DPMSolverMultistepScheduler
 
+torch.manual_seed(0)
 
 import argparse
 parser = argparse.ArgumentParser()
@@ -149,6 +150,8 @@ if args.bench:
         images = pipe(prompt=prompts[i], num_inference_steps = num_inference_steps).images[0]
         out = str(i) + ".png"
         if args.mix_linear:
-            out = "q" + out
+            out = "q_" + out
+        if args.fp8_linear:
+            out = "fp8_" + out
         images.save(out)
         

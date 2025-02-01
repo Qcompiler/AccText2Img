@@ -8,11 +8,14 @@ from torch.nn.parameter import Parameter
 from torch.nn import init
 from torch.nn import functional as F
 import mixgemm
-import mixlib
+
 from vllm import _custom_ops as ops
 import vllm._C
 import mixgemm_v2
+
 layer_id = 0
+use_locality = True
+
 class MixLinear_FP8GEMM(nn.Module):
     def __init__(self, in_features, out_features, bias = True,  
                  device=None):
@@ -85,7 +88,7 @@ class MixLinear_FP8GEMM(nn.Module):
             torch.ops._C.dynamic_scaled_fp8_quant(self.output, x, self.scale_input)
 
             self.q_weight = torch.empty_like(self.weight, dtype=torch.float8_e4m3fn)
-            torch.ops._C.static_scaled_fp8_quant(self.q_weight, self.weight, self.scale_weight)
+            torch.ops._C.dynamic_scaled_fp8_quant(self.q_weight, self.weight, self.scale_weight)
 
             self.weight.data = self.weight.cpu()
             # del self.weight
@@ -97,37 +100,36 @@ class MixLinear_FP8GEMM(nn.Module):
 
             
         out_shape =  input.shape[:-1] + (self.out_features, )
-        
-        if len(input.shape) == 3:
+        if use_locality:
+            if len(input.shape) == 3:
 
-            if self.cnt >= 50:
-                
-                self.cnt = 0
-                self.find_zeros[0] = 0
-
-                # self.reuse_output_because_of_zeros_input = False
-                # release cache
-                self.cache_computed = False
-
-        
-            if self.cnt == 0 and input.shape[0] == 2:
-                mixgemm.find_zeros(self.find_zeros, input, input.shape[0], input.shape[1], input.shape[2], self.last_input)
-                
-
-            if self.cnt == 1 and input.shape[0] == 2:
-                
-                if self.find_zeros[0] == 1:
-                    mixgemm.reuse_output(self.reuse_output, input, input.shape[0], input.shape[1],  input.shape[2], self.last_input)
-
-                    if self.reuse_output[0] == 1:
-                        self.reuse_output_because_of_zeros_input = True
+                if self.cnt >= 50:
                     
-            self.cnt += 1
-            if  self.reuse_output_because_of_zeros_input is True and self.cache_computed:
-                return self.y1  
-        
-        # if self.cnt >  1:
-        #     assert  input.dtype == torch.float8_e4m3fn
+                    self.cnt = 0
+                    self.find_zeros[0] = 0
+
+                    # self.reuse_output_because_of_zeros_input = False
+                    # release cache
+                    self.cache_computed = False
+
+            
+                if self.cnt == 0 and input.shape[0] == 2:
+                    mixgemm.find_zeros(self.find_zeros, input, input.shape[0], input.shape[1], input.shape[2], self.last_input)
+                    
+
+                if self.cnt == 1 and input.shape[0] == 2:
+                    
+                    if self.find_zeros[0] == 1:
+                        mixgemm.reuse_output(self.reuse_output, input, input.shape[0], input.shape[1],  input.shape[2], self.last_input)
+
+                        if self.reuse_output[0] == 1:
+                            self.reuse_output_because_of_zeros_input = True
+                        
+                self.cnt += 1
+                if  self.reuse_output_because_of_zeros_input is True and self.cache_computed:
+                    return self.y1  
+            
+
         if not  input.dtype == torch.float8_e4m3fn:
             torch.ops._C.static_scaled_fp8_quant(self.output, input, self.scale_input)
             input_tensor = self.output
@@ -142,41 +144,45 @@ class MixLinear_FP8GEMM(nn.Module):
                                             self.scale_input,
                                             self.scale_weight,
                                             self.bias, len(input.shape))
-        if len(input.shape) == 3:
-            if self.reuse_output_because_of_zeros_input:
-                self.cache_computed = True
-                self.y1 = y1
-        return y1
-    
-        return ops.cutlass_scaled_mm(self.output, self.w.T,
-                                                out_dtype=torch.float16,
-                                                scale_a=self.scale_input,
-                                                scale_b=self.scale_weight, bias = self.bias).reshape(out_shape)
+        if use_locality:
+            if len(input.shape) == 3:
+                if self.reuse_output_because_of_zeros_input:
+                    self.cache_computed = True
+                    self.y1 = y1
         
-        if weight_dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
-            # if len(input.shape) == 3:
-            if weight_dtype == torch.float8_e4m3fn:
-                inn = input.reshape(-1, input.shape[-1]).to(torch.float8_e4m3fn)
-            else:
-                inn = input.reshape(-1, input.shape[-1]).to(torch.float8_e4m3fn)
+    
+        # return ops.cutlass_scaled_mm(self.output, self.w.T,
+        #                                         out_dtype=torch.float16,
+        #                                         scale_a=self.scale_input,
+        #                                         scale_b=self.scale_weight, bias = self.bias).reshape(out_shape)
+        
+        # if weight_dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+        #     # if len(input.shape) == 3:
+        #     if weight_dtype == torch.float8_e4m3fn:
+        #         inn = input.reshape(-1, input.shape[-1]).to(torch.float8_e4m3fn)
+        #     else:
+        #         inn = input.reshape(-1, input.shape[-1]).to(torch.float8_e4m3fn)
             
 
-            x = input.reshape(-1, input.shape[-1]) 
-            scale_input = self.scale_weight
+        #     x = input.reshape(-1, input.shape[-1]) 
+        #     scale_input = self.scale_weight
 
 
-            out_dtype = torch.float16
-            o = ops.cutlass_scaled_mm(inn, self.w,
-                                            out_dtype=torch.float16,
-                                            scale_a=scale_input,
-                                            scale_b=self.scale_weight, bias = self.bias)
+        #     out_dtype = torch.float16
+        #     o = ops.cutlass_scaled_mm(inn, self.w,
+        #                                     out_dtype=torch.float16,
+        #                                     scale_a=scale_input,
+        #                                     scale_b=self.scale_weight, bias = self.bias)
             # if self.bias is not None:
             #     o = torch._scaled_mm(inn, self.w, out_dtype=out_dtype, bias=self.bias, scale_a=scale_input, scale_b=self.scale_weight)
             # else:
             #     o = torch._scaled_mm(inn, self.w, out_dtype=out_dtype, scale_a=scale_input, scale_b=self.scale_weight)
 
-        debug = True
+        debug = False
         if debug:
+            weight_dtype = torch.float8_e4m3fn
+            self.w = self.weight.t().to(weight_dtype)
+            scale_input = self.scale_weight
 
             start_event = torch.cuda.Event(enable_timing=True)
             end_event = torch.cuda.Event(enable_timing=True)
@@ -208,7 +214,9 @@ class MixLinear_FP8GEMM(nn.Module):
             torch.cuda.synchronize()
             ms_fp8_applied_ai = start_event.elapsed_time(end_event) 
 
-
+            inn = input.reshape(-1, input.shape[-1]).to(torch.float8_e4m3fn)
+            out_dtype = torch.float16
+            
             start_event = torch.cuda.Event(enable_timing=True)
             end_event = torch.cuda.Event(enable_timing=True)
             torch.cuda.synchronize()
@@ -231,7 +239,7 @@ class MixLinear_FP8GEMM(nn.Module):
             K = x.shape[1]
 
             scaleRow = torch.zeros((M, 1) , dtype= torch.float32, device= input.device)
-            q_xcache = mixlib.FindRowScaleF32(x, scaleRow, M, K, 8) 
+            q_xcache = mixgemm.FindRowScaleF32(x, scaleRow, M, K, 8) 
             start_event = torch.cuda.Event(enable_timing=True)
             end_event = torch.cuda.Event(enable_timing=True)
             torch.cuda.synchronize()
@@ -263,7 +271,7 @@ class MixLinear_FP8GEMM(nn.Module):
                                                                                         self.ms_fp/( ms_fp8_applied_ai),
                                                                                          self.ms_fp/( ms_int8)))
             
-        return o.reshape(out_shape)
+        return y1
 
     def extra_repr(self) -> str:
         return f'in_features={self.in_features}, out_features={self.out_features}, bias={self.bias is not None}'

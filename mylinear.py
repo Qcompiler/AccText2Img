@@ -14,7 +14,7 @@ try:
 except:
     memory_bound_eetq_linear = False
 
-memory_bound_eetq_linear = False
+# memory_bound_eetq_linear = False
 
 def FindOutliers(Activation, sigma = None):
 
@@ -86,7 +86,7 @@ class MixLinear_GEMM(nn.Module):
         """
         To do
         (1) I should write a kernel to accelerated the code : if  (input[[1],0:32,0:8] - self.last_input).sum() == 0:
-            2025.1.7: DONE
+            2025.1.17: DONE
             not required now ---------- I use my locality algorithm
         (2) I should do some further analyse of max value pattern 
             2025.1.8 : DONE
